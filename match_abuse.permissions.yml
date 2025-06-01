@@ -1,0 +1,21 @@
+block users:
+  title: 'Block other users'
+  description: 'Allow users to block other users.'
+
+report abuse:
+  title: 'Report abuse'
+  description: 'Allow users to report other users for abuse.'
+
+view own abuse reports:
+  title: 'View own abuse reports'
+  description: 'Allow users to see their submitted abuse reports.'
+
+administer abuse reports:
+  title: 'Administer abuse reports'
+  description: 'Allow users to view and manage all abuse reports.'
+  restrict access: true
+
+administer block users:
+    title: 'Administer user blocks'
+    description: 'Allow users to view and manage all user blocks.'
+    restrict access: true

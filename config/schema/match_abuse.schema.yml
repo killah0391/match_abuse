@@ -1,0 +1,25 @@
+match_abuse.match_abuse_block.*:
+  type: config_entity
+  label: 'Match Abuse Block config'
+  mapping:
+    id:
+      type: string
+      label: 'ID'
+    label:
+      type: label
+      label: 'Label'
+    uuid:
+      type: string
+
+match_abuse.match_abuse_report.*:
+  type: config_entity
+  label: 'Match Abuse Report config'
+  mapping:
+    id:
+      type: string
+      label: 'ID'
+    label:
+      type: label
+      label: 'Label'
+    uuid:
+      type: string

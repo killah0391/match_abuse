@@ -1,0 +1,10 @@
+match-abuse-script:
+  js:
+    js/match_abuse.js: {}
+  dependencies:
+    - core/jquery
+    - core/drupal.ajax
+    - core/drupal
+  css:
+    theme:
+      css/match_abuse.css: {}

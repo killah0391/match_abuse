@@ -1,0 +1,33 @@
+.toast-container .toast.status .toast-header {
+  background: #3fae6cba;
+  color: #227142;
+}
+
+/* .toast-container .toast.success .toast-header small {
+  color: #07381e;
+} */
+
+.toast-container .toast.error .toast-header {
+  background: rgba(192, 73, 73, 0.664);
+  color: rgb(116, 39, 39);
+}
+
+.toast-container .toast.warning .toast-header {
+  background: #eaa3229e;
+  color: rgb(152, 106, 21);
+}
+
+.toast-container .toast.status .toast-body {
+  background: #b6edcc99;
+  color: #808080;
+}
+
+.toast-container .toast.error .toast-body {
+  background: rgba(255, 194, 194, 0.664);
+  color: #808080;
+}
+
+.toast-container .toast.warning .toast-body {
+  background: #fde6bb8a;
+  color: #808080;
+}

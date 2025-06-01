@@ -1,0 +1,53 @@
+match_abuse.block_user:
+  path: '/user/{user_to_block}/block'
+  defaults:
+    _form: '\Drupal\match_abuse\Form\MatchAbuseBlockForm'
+    _title: 'Block User'
+  requirements:
+    _permission: 'block users'
+    user_to_block: \d+
+
+match_abuse.unblock_user:
+  path: '/user/{user_to_unblock}/unblock'
+  defaults:
+    _controller: '\Drupal\match_abuse\Controller\MatchAbuseController::unblockUser' # Kept for non-JS or reference
+    _title: 'Unblock User'
+  requirements:
+    _permission: 'block users'
+    user_to_unblock: \d+
+
+match_abuse.report_abuse:
+  path: '/user/{user_to_report}/report-abuse'
+  defaults:
+    _form: '\Drupal\match_abuse\Form\MatchAbuseReportForm'
+    _title: 'Report Abuse'
+  requirements:
+    _permission: 'report abuse'
+    user_to_report: \d+
+
+# --- AJAX ROUTES ---
+match_abuse.ajax_block_user:
+  path: '/user/{user_to_block}/ajax-block'
+  defaults:
+    _controller: '\Drupal\match_abuse\Controller\MatchAbuseController::ajaxBlockUser'
+    _title: 'Block User AJAX'
+  requirements:
+    _permission: 'block users'
+    user_to_block: \d+
+  options:
+    parameters:
+      user_to_block:
+        type: entity:user
+
+match_abuse.ajax_unblock_user:
+  path: '/user/{user_to_unblock}/ajax-unblock'
+  defaults:
+    _controller: '\Drupal\match_abuse\Controller\MatchAbuseController::ajaxUnblockUser'
+    _title: 'Unblock User AJAX'
+  requirements:
+    _permission: 'block users'
+    user_to_unblock: \d+
+  options:
+    parameters:
+      user_to_unblock:
+        type: entity:user

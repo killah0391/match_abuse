@@ -1,0 +1,9 @@
+name: 'Match Abuse'
+type: module
+description: 'Allows users to block other users and send abuse reports to support.'
+core_version_requirement: ^10
+package: 'User Management'
+
+dependencies:
+  - drupal:user
+  - drupal:text

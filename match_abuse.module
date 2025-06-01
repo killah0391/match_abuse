@@ -1,0 +1,148 @@
+<?php
+
+use Drupal\Core\Routing\RouteMatchInterface;
+use Drupal\Core\Url;
+use Drupal\user\UserInterface;
+use Drupal\Core\Entity\EntityInterface;
+use Drupal\Core\Entity\Display\EntityViewDisplayInterface;
+use Drupal\Core\Link;
+use Drupal\match_abuse\Ajax\ShowBootstrapToastCommand;
+use Drupal\match_abuse\Controller\MatchAbuseController;
+use Drupal\Core\Render\RendererInterface;
+
+/**
+ * Implements hook_help().
+ */
+function match_abuse_help($route_name, RouteMatchInterface $route_match)
+{
+  switch ($route_name) {
+    case 'help.page.match_abuse':
+      return '<p>' . t('Provides functionality for users to block other users and report abuse.') . '</p>';
+  }
+}
+
+/**
+ * Implements hook_mail().
+ */
+function match_abuse_mail($key, &$message, $params)
+{
+  $options = ['langcode' => $message['langcode']];
+  $report = $params['report'];
+  $reporter = $report->get('reporter_uid')->entity;
+  $reported = $report->get('reported_uid')->entity;
+
+  switch ($key) {
+    case 'abuse_report_notification':
+      $message['from'] = \Drupal::config('system.site')->get('mail');
+      $message['subject'] = t('New Abuse Report Submitted');
+      $message['body'][] = t('A new abuse report has been submitted.');
+      $message['body'][] = t('Reporter: %reporter', ['%reporter' => $reporter->getAccountName()]);
+      $message['body'][] = t('Reported User: %reported', ['%reported' => $reported->getAccountName()]);
+      $message['body'][] = t('Reason: %reason', ['%reason' => $report->get('reason')->value]);
+      $message['body'][] = t('Message: %message', ['%message' => $report->get('message')->value]);
+      break;
+  }
+}
+
+/**
+ * Prepares actions for the user profile dropdown.
+ *
+ * @param \Drupal\user\UserInterface $viewed_user
+ *   The user whose profile is being viewed.
+ * @param \Drupal\Core\Render\RendererInterface $renderer
+ *   The renderer service.
+ *
+ * @return array
+ *   An array containing actions for the dropdown.
+ *   - block_action: Render array for the block/unblock link container.
+ *   - other_actions: Array of other action links (edit, report).
+ */
+function match_abuse_prepare_profile_actions_dropdown(UserInterface $viewed_user, RendererInterface $renderer) {
+  $current_user_account = \Drupal::currentUser();
+  // Load the full user object for the current user to use its methods if necessary.
+  $current_user = \Drupal::entityTypeManager()->getStorage('user')->load($current_user_account->id());
+
+  $actions = ['block_action' => NULL, 'other_actions' => []];
+
+  /** @var \Drupal\match_abuse\Controller\MatchAbuseController $controller */
+  $controller = \Drupal::classResolver(MatchAbuseController::class)->create(\Drupal::getContainer());
+
+  // Edit Profile Link:
+  // Show if the current user has permission to update the viewed user's profile.
+  // This covers both the profile owner editing their own profile and an administrator
+  // with 'administer users' permission (or other relevant permissions) editing any profile.
+  if ($viewed_user->access('update', $current_user_account)) {
+    $actions['other_actions'][] = [
+      'title' => t('Edit Profile'),
+      'url' => Url::fromRoute('entity.user.edit_form', ['user' => $viewed_user->id()])->toString(),
+      'attributes' => ['class' => ['profile-edit-link']], // Custom classes for the link itself.
+    ];
+  }
+
+  // Actions specific to visitors (i.e., when the current user is NOT the profile owner).
+  if ($current_user->id() != $viewed_user->id()) {
+    if ($current_user->hasPermission('block users')) {
+      $block_link_options = [
+        'wrapper_classes' => [], // The container itself won't have extra classes like mt-3.
+        'link_classes_base' => ['use-ajax', 'match-abuse-link', 'dropdown-item'], // Style link as a dropdown item.
+        'link_classes_block_state' => ['bg-danger', 'mb-n2', 'text-muted', 'rounded-bottom-2'], // Specific for dropdown: text color for block
+        'link_classes_unblock_state' => ['bg-success', 'mb-n2', 'text-muted', 'rounded-bottom-2'], // Specific for dropdown: text color for unblock
+        // By not specifying 'icon_markup', the default from getBlockLinkRenderArray will be used.
+      ];
+      // getBlockLinkRenderArray returns a container with the ID, which will be placed inside an <li>.
+      $actions['block_action'] = $controller->getBlockLinkRenderArray($viewed_user, NULL, $block_link_options);
+    }
+
+    // Report Abuse Action for visitors.
+    if ($current_user->hasPermission('report abuse')) {
+      $actions['other_actions'][] = [
+        'title' => t('Report Abuse'),
+        'url' => Url::fromRoute('match_abuse.report_abuse', ['user_to_report' => $viewed_user->id()])->toString(),
+        'attributes' => ['class' => ['match-abuse-report-link']], // Custom classes for the link itself.
+      ];
+    }
+  }
+
+  // Only return actions if there's something to show.
+  if (!empty($actions['block_action']) || !empty($actions['other_actions'])) {
+    return $actions;
+  }
+  return [];
+}
+
+
+/**
+ * Implements hook_entity_view_alter().
+ */
+function match_abuse_entity_view_alter(array &$build, EntityInterface $entity, EntityViewDisplayInterface $display)
+{
+  // Only act on user entities, in the 'default' view mode.
+  if ($entity->getEntityTypeId() === 'user' && $entity->id() > 0 && $display->getMode() == 'default') {
+    $current_user = \Drupal::currentUser();
+    $user_being_viewed = $entity;
+
+    // The block/unblock and report links are now handled by the preprocess function
+    // and rendered in user.html.twig via a dropdown.
+    // We remove any old programmatic additions here to avoid duplication.
+    unset($build['match_abuse_block_action']);
+    unset($build['match_abuse_report_action']);
+
+    // Libraries are now attached in match_abuse_preprocess_user().
+  }
+}
+
+/**
+ * Implements hook_preprocess_HOOK() for user templates.
+ */
+function match_abuse_preprocess_user(&$variables) {
+  $viewed_user = $variables['elements']['#user'];
+  if ($viewed_user instanceof UserInterface && $viewed_user->id() > 0) {
+    $renderer = \Drupal::service('renderer');
+    $variables['profile_actions_data'] = match_abuse_prepare_profile_actions_dropdown($viewed_user, $renderer);
+    $variables['viewed_user_id'] = $viewed_user->id(); // For unique dropdown ID.
+
+    $variables['#attached']['library'][] = 'core/drupal.ajax';
+    $variables['#attached']['library'][] = 'match_abuse/match-abuse-script';
+    // The theme is expected to provide Bootstrap JS for dropdowns and Bootstrap icons.
+  }
+}

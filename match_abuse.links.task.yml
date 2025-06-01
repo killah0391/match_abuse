@@ -1,0 +1,5 @@
+# match_abuse.user_reports_tab:
+#   route_name: 'match_abuse.user_reports_view' # We will create a view with this route name
+#   title: 'My Abuse Reports'
+#   base_route: entity.user.canonical
+#   weight: 10

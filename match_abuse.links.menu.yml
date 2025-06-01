@@ -1,0 +1,6 @@
+match_abuse.admin_reports:
+  title: 'Abuse Reports'
+  description: 'View and manage abuse reports.'
+  parent: system.admin_content
+  route_name: 'entity.match_abuse_report.collection'
+  weight: 100
