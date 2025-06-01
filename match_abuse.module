@@ -84,7 +84,7 @@ function match_abuse_prepare_profile_actions_dropdown(UserInterface $viewed_user
     if ($current_user->hasPermission('block users')) {
       $block_link_options = [
         'wrapper_classes' => [], // The container itself won't have extra classes like mt-3.
-        'link_classes_base' => ['use-ajax', 'match-abuse-link', 'dropdown-item'], // Style link as a dropdown item.
+        'link_classes_base' => ['js-match-abuse-confirm-action', 'match-abuse-link', 'dropdown-item'], // Style link as a dropdown item.
         'link_classes_block_state' => ['bg-danger', 'mb-n2', 'text-muted', 'rounded-bottom-2'], // Specific for dropdown: text color for block
         'link_classes_unblock_state' => ['bg-success', 'mb-n2', 'text-muted', 'rounded-bottom-2'], // Specific for dropdown: text color for unblock
         // By not specifying 'icon_markup', the default from getBlockLinkRenderArray will be used.
@@ -141,7 +141,7 @@ function match_abuse_preprocess_user(&$variables) {
     $variables['profile_actions_data'] = match_abuse_prepare_profile_actions_dropdown($viewed_user, $renderer);
     $variables['viewed_user_id'] = $viewed_user->id(); // For unique dropdown ID.
 
-    $variables['#attached']['library'][] = 'core/drupal.ajax';
+    // $variables['#attached']['library'][] = 'core/drupal.ajax';
     $variables['#attached']['library'][] = 'match_abuse/match-abuse-script';
     // The theme is expected to provide Bootstrap JS for dropdowns and Bootstrap icons.
   }
