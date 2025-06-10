@@ -2,9 +2,8 @@
 
 namespace Drupal\match_abuse\Service;
 
-use Drupal\Core\Entity\EntityTypeManagerInterface;
 use Drupal\Core\Session\AccountInterface;
-use Drupal\user\UserInterface;
+use Drupal\Core\Entity\EntityTypeManagerInterface;
 
 /**
  * Service for checking block status between users.
@@ -46,7 +45,6 @@ class BlockChecker implements BlockCheckerInterface
     if ($user_a->id() == $user_b->id()) {
       return FALSE; // Users cannot block themselves.
     }
-
     $block_storage = $this->entityTypeManager->getStorage('match_abuse_block');
     $query = $block_storage->getQuery()
       ->condition('blocker_uid', $user_a->id())
@@ -67,5 +65,13 @@ class BlockChecker implements BlockCheckerInterface
       return FALSE;
     }
     return $this->userHasBlocked($user_one, $user_two) || $this->userHasBlocked($user_two, $user_one);
+  }
+
+  /**
+   * {@inheritdoc}
+   */
+  public function isUserBlockedBy(AccountInterface $blocked_user, AccountInterface $blocker_user): bool {
+    // This directly uses the private helper method.
+    return $this->userHasBlocked($blocker_user, $blocked_user);
   }
 }

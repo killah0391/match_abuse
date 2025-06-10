@@ -1,9 +1,7 @@
 <?php
 
 namespace Drupal\match_abuse\Service;
-
 use Drupal\Core\Session\AccountInterface;
-use Drupal\user\UserInterface;
 
 /**
  * Interface for checking block status between users.
@@ -25,4 +23,17 @@ interface BlockCheckerInterface
    *   TRUE if a block is active in either direction, FALSE otherwise.
    */
   public function isBlockActive(AccountInterface $user_one, AccountInterface $user_two): bool;
+
+  /**
+   * Checks if a specific user is blocked by another specific user.
+   *
+   * @param \Drupal\Core\Session\AccountInterface $blocked_user
+   *   The user to check if they are blocked.
+   * @param \Drupal\Core\Session\AccountInterface $blocker_user
+   *   The user who might be doing the blocking.
+   *
+   * @return bool
+   *   TRUE if $blocker_user has blocked $blocked_user, FALSE otherwise.
+   */
+  public function isUserBlockedBy(AccountInterface $blocked_user, AccountInterface $blocker_user): bool;
 }
