@@ -1,13 +1,15 @@
 <?php
 
-use Drupal\Core\Routing\RouteMatchInterface;
 use Drupal\Core\Url;
-use Drupal\user\UserInterface;
-use Drupal\Core\Entity\EntityInterface;
-use Drupal\Core\Entity\Display\EntityViewDisplayInterface;
 use Drupal\Core\Link;
-use Drupal\Core\Render\Element;
+use Drupal\user\Entity\User;
 use Drupal\Core\Render\Markup;
+use Drupal\user\UserInterface;
+use Drupal\Core\Render\Element;
+use Drupal\Core\Entity\EntityInterface;
+use Drupal\Core\Routing\RouteMatchInterface;
+use Drupal\Core\Entity\Display\EntityViewDisplayInterface;
+use Symfony\Component\HttpKernel\Exception\NotFoundHttpException;
 
 /**
  * Implements hook_help().
@@ -50,61 +52,52 @@ function match_abuse_entity_view_alter(array &$build, EntityInterface $entity, E
 {
   // Only act on user entities, in the 'default' view mode.
   if ($entity->getEntityTypeId() === 'user' && $entity->id() > 0 && $display->getMode() == 'default') {
-    $current_user = \Drupal::currentUser();
+    $current_user_account = \Drupal::currentUser();
     /** @var \Drupal\user\UserInterface $user_being_viewed */
     $user_being_viewed = $entity;
-    $current_user_id = $current_user->id();
-    $viewed_user_id = $user_being_viewed->id();
+    $user_being_viewed = User::load($entity->id());
 
     // Don't show actions on your own profile.
-    if ($current_user_id != $viewed_user_id) {
+    if ($current_user_account->id() != $user_being_viewed->id()) {
+      /** @var \Drupal\match_abuse\Service\BlockCheckerInterface|null $block_checker */
+      $hide_all_other_content = NULL;
+      $block_checker = \Drupal::service('match_abuse.block_checker');
+
       $dropdown_items = [];
-      $hide_all_other_content = FALSE;
-      $block_storage = \Drupal::entityTypeManager()->getStorage('match_abuse_block');
+      $viewed_user_id = $user_being_viewed->id();
 
-      // Determine if the viewed user is blocked by the current user.
-      if ($current_user->hasPermission('block users')) {
-        $storage = \Drupal::entityTypeManager()->getStorage('match_abuse_block');
-        // Check if current user has blocked the viewed user
-        $query_cu_blocks_vu = $block_storage->getQuery()
-          ->condition('blocker_uid', $current_user_id)
-          ->condition('blocked_uid', $viewed_user_id)
-          ->accessCheck(TRUE);
-        $cu_blocks_vu_ids = $query_cu_blocks_vu->execute();
-        $current_user_has_blocked_viewed_user = !empty($cu_blocks_vu_ids);
+      // Scenario 1: The user whose profile is being viewed has blocked the current user.
+      // Method signature: isUserBlockedBy(AccountInterface $blocked_user, AccountInterface $blocker_user)
+      if ($block_checker && $block_checker->isUserBlockedBy($current_user_account, $user_being_viewed)) {
+        throw new NotFoundHttpException(t('This user profile is not available.'));
+      }
+      // If not blocked by viewed user, proceed with other scenarios.
+      else {
+        // Scenario 2: The current user has blocked the user whose profile is being viewed.
+        $current_user_has_blocked_viewed_user = $block_checker &&
+                                              $current_user_account->hasPermission('block users') &&
+                                              $block_checker->isUserBlockedBy($user_being_viewed, $current_user_account);
 
-        // Check if viewed user has blocked the current user
-        $query_vu_blocks_cu = $block_storage->getQuery()
-          ->condition('blocker_uid', $viewed_user_id)
-          ->condition('blocked_uid', $current_user_id)
-          ->accessCheck(TRUE);
-        $vu_blocks_cu_ids = $query_vu_blocks_cu->execute();
-        $viewed_user_has_blocked_current_user = !empty($vu_blocks_cu_ids);
-
-        if ($viewed_user_has_blocked_current_user) {
+        if ($current_user_has_blocked_viewed_user) {
           $hide_all_other_content = TRUE;
-          $build['match_abuse_block_alert'] = [
-            '#type' => 'markup',
-            '#markup' => '<div class="alert alert-warning mt-3" role="alert">' . t('%username has blocked you.', ['%username' => $user_being_viewed->getAccountName()]) . '</div>',
-            '#weight' => -100, // Display prominently
-          ];
-          // Dropdown items remain empty as current user can't act.
-        } elseif ($current_user_has_blocked_viewed_user) {
-          $hide_all_other_content = TRUE;
-          $report_button_link = Link::createFromRoute(
-            Markup::create('<i class="bi bi-shield-exclamation"></i> ' . t('Report @username', ['@username' => $user_being_viewed->getAccountName()])),
-            'match_abuse.report_abuse',
-            ['user_to_report' => $viewed_user_id],
-            ['attributes' => ['class' => ['btn', 'btn-danger', 'btn-sm', 'ms-2']]]
-          );
+          $report_button_link_text = '';
+          if ($current_user_account->hasPermission('report abuse')) {
+            $report_button_link = Link::createFromRoute(
+              Markup::create('<i class="bi bi-shield-exclamation"></i> ' . t('Report @username', ['@username' => $user_being_viewed->getAccountName()])),
+              'match_abuse.report_abuse',
+              ['user_to_report' => $viewed_user_id],
+              ['attributes' => ['class' => ['btn', 'btn-danger', 'btn-sm', 'ms-2']]]
+            );
+            $report_button_link_text = ' ' . $report_button_link->toString();
+          }
 
           $build['match_abuse_block_alert'] = [
             '#type' => 'markup',
-            '#markup' => '<div class="alert alert-warning mt-3" role="alert">' . t('You have blocked %username.', ['%username' => $user_being_viewed->getAccountName()]) . ' ' . $report_button_link->toString() . '</div>',
+            '#markup' => '<div class="alert alert-warning mt-3" role="alert">' . t('You have blocked %username.', ['%username' => $user_being_viewed->getAccountName()]) . $report_button_link_text . '</div>',
             '#weight' => -100, // Display prominently
           ];
 
-          if ($current_user->hasPermission('block users')) {
+          if ($current_user_account->hasPermission('block users')) {
             $dropdown_items['unblock_user'] = [
               'title' => Markup::create('<i class="bi bi-person-check"></i> ' . t('Unblock @username', ['@username' => $user_being_viewed->getAccountName()])),
               'url' => Url::fromRoute('match_abuse.ajax_unblock_user', ['user_to_unblock' => $viewed_user_id]),
@@ -113,7 +106,7 @@ function match_abuse_entity_view_alter(array &$build, EntityInterface $entity, E
           }
         } else {
           // No blocks: Standard "Block User" action
-          if ($current_user->hasPermission('block users')) {
+          if ($current_user_account->hasPermission('block users')) {
             $dropdown_items['block_user'] = [
               'title' => Markup::create('<i class="bi bi-person-slash"></i> ' . t('Block @username', ['@username' => $user_being_viewed->getAccountName()])),
               'url' => Url::fromRoute('match_abuse.ajax_block_user', ['user_to_block' => $viewed_user_id]),
@@ -172,11 +165,14 @@ function match_abuse_entity_view_alter(array &$build, EntityInterface $entity, E
           // For now, hiding components should cover most profile fields.
         }
 
-        // Clean up old elements if they were defined by a previous version of this hook.
-        // These specific keys are from a previous iteration and might not be present.
-        unset($build['match_abuse_block_action']);
-        unset($build['match_abuse_report_action']);
-      }
+      // Clean up old elements that might have been defined by a previous version or other modules.
+      unset($build['match_abuse_block_action']);
+      unset($build['match_abuse_report_action']);
+
+      // The logic for $hide_all_other_content and hiding specific fields
+      // is no longer needed here, as an exception would have been thrown
+      // if the content needed to be hidden due to a block.
     }
   }
+}
 }
