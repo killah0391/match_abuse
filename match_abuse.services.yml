@@ -1,0 +1,4 @@
+services:
+  match_abuse.block_checker:
+    class: Drupal\match_abuse\Service\BlockChecker
+    arguments: ['@entity_type.manager']

@@ -6,9 +6,8 @@ use Drupal\user\UserInterface;
 use Drupal\Core\Entity\EntityInterface;
 use Drupal\Core\Entity\Display\EntityViewDisplayInterface;
 use Drupal\Core\Link;
-use Drupal\match_abuse\Ajax\ShowBootstrapToastCommand;
-use Drupal\match_abuse\Controller\MatchAbuseController;
-use Drupal\Core\Render\RendererInterface;
+use Drupal\Core\Render\Element;
+use Drupal\Core\Render\Markup;
 
 /**
  * Implements hook_help().
@@ -45,73 +44,6 @@ function match_abuse_mail($key, &$message, $params)
 }
 
 /**
- * Prepares actions for the user profile dropdown.
- *
- * @param \Drupal\user\UserInterface $viewed_user
- *   The user whose profile is being viewed.
- * @param \Drupal\Core\Render\RendererInterface $renderer
- *   The renderer service.
- *
- * @return array
- *   An array containing actions for the dropdown.
- *   - block_action: Render array for the block/unblock link container.
- *   - other_actions: Array of other action links (edit, report).
- */
-function match_abuse_prepare_profile_actions_dropdown(UserInterface $viewed_user, RendererInterface $renderer) {
-  $current_user_account = \Drupal::currentUser();
-  // Load the full user object for the current user to use its methods if necessary.
-  $current_user = \Drupal::entityTypeManager()->getStorage('user')->load($current_user_account->id());
-
-  $actions = ['block_action' => NULL, 'other_actions' => []];
-
-  /** @var \Drupal\match_abuse\Controller\MatchAbuseController $controller */
-  $controller = \Drupal::classResolver(MatchAbuseController::class)->create(\Drupal::getContainer());
-
-  // Edit Profile Link:
-  // Show if the current user has permission to update the viewed user's profile.
-  // This covers both the profile owner editing their own profile and an administrator
-  // with 'administer users' permission (or other relevant permissions) editing any profile.
-  if ($viewed_user->access('update', $current_user_account)) {
-    $actions['other_actions'][] = [
-      'title' => t('Edit Profile'),
-      'url' => Url::fromRoute('entity.user.edit_form', ['user' => $viewed_user->id()])->toString(),
-      'attributes' => ['class' => ['profile-edit-link']], // Custom classes for the link itself.
-    ];
-  }
-
-  // Actions specific to visitors (i.e., when the current user is NOT the profile owner).
-  if ($current_user->id() != $viewed_user->id()) {
-    if ($current_user->hasPermission('block users')) {
-      $block_link_options = [
-        'wrapper_classes' => [], // The container itself won't have extra classes like mt-3.
-        'link_classes_base' => ['js-match-abuse-confirm-action', 'match-abuse-link', 'dropdown-item'], // Style link as a dropdown item.
-        'link_classes_block_state' => ['bg-danger', 'mb-n2', 'text-muted', 'rounded-bottom-2'], // Specific for dropdown: text color for block
-        'link_classes_unblock_state' => ['bg-success', 'mb-n2', 'text-muted', 'rounded-bottom-2'], // Specific for dropdown: text color for unblock
-        // By not specifying 'icon_markup', the default from getBlockLinkRenderArray will be used.
-      ];
-      // getBlockLinkRenderArray returns a container with the ID, which will be placed inside an <li>.
-      $actions['block_action'] = $controller->getBlockLinkRenderArray($viewed_user, NULL, $block_link_options);
-    }
-
-    // Report Abuse Action for visitors.
-    if ($current_user->hasPermission('report abuse')) {
-      $actions['other_actions'][] = [
-        'title' => t('Report Abuse'),
-        'url' => Url::fromRoute('match_abuse.report_abuse', ['user_to_report' => $viewed_user->id()])->toString(),
-        'attributes' => ['class' => ['match-abuse-report-link']], // Custom classes for the link itself.
-      ];
-    }
-  }
-
-  // Only return actions if there's something to show.
-  if (!empty($actions['block_action']) || !empty($actions['other_actions'])) {
-    return $actions;
-  }
-  return [];
-}
-
-
-/**
  * Implements hook_entity_view_alter().
  */
 function match_abuse_entity_view_alter(array &$build, EntityInterface $entity, EntityViewDisplayInterface $display)
@@ -119,30 +51,132 @@ function match_abuse_entity_view_alter(array &$build, EntityInterface $entity, E
   // Only act on user entities, in the 'default' view mode.
   if ($entity->getEntityTypeId() === 'user' && $entity->id() > 0 && $display->getMode() == 'default') {
     $current_user = \Drupal::currentUser();
+    /** @var \Drupal\user\UserInterface $user_being_viewed */
     $user_being_viewed = $entity;
+    $current_user_id = $current_user->id();
+    $viewed_user_id = $user_being_viewed->id();
 
-    // The block/unblock and report links are now handled by the preprocess function
-    // and rendered in user.html.twig via a dropdown.
-    // We remove any old programmatic additions here to avoid duplication.
-    unset($build['match_abuse_block_action']);
-    unset($build['match_abuse_report_action']);
+    // Don't show actions on your own profile.
+    if ($current_user_id != $viewed_user_id) {
+      $dropdown_items = [];
+      $hide_all_other_content = FALSE;
+      $block_storage = \Drupal::entityTypeManager()->getStorage('match_abuse_block');
 
-    // Libraries are now attached in match_abuse_preprocess_user().
-  }
-}
+      // Determine if the viewed user is blocked by the current user.
+      if ($current_user->hasPermission('block users')) {
+        $storage = \Drupal::entityTypeManager()->getStorage('match_abuse_block');
+        // Check if current user has blocked the viewed user
+        $query_cu_blocks_vu = $block_storage->getQuery()
+          ->condition('blocker_uid', $current_user_id)
+          ->condition('blocked_uid', $viewed_user_id)
+          ->accessCheck(TRUE);
+        $cu_blocks_vu_ids = $query_cu_blocks_vu->execute();
+        $current_user_has_blocked_viewed_user = !empty($cu_blocks_vu_ids);
 
-/**
- * Implements hook_preprocess_HOOK() for user templates.
- */
-function match_abuse_preprocess_user(&$variables) {
-  $viewed_user = $variables['elements']['#user'];
-  if ($viewed_user instanceof UserInterface && $viewed_user->id() > 0) {
-    $renderer = \Drupal::service('renderer');
-    $variables['profile_actions_data'] = match_abuse_prepare_profile_actions_dropdown($viewed_user, $renderer);
-    $variables['viewed_user_id'] = $viewed_user->id(); // For unique dropdown ID.
+        // Check if viewed user has blocked the current user
+        $query_vu_blocks_cu = $block_storage->getQuery()
+          ->condition('blocker_uid', $viewed_user_id)
+          ->condition('blocked_uid', $current_user_id)
+          ->accessCheck(TRUE);
+        $vu_blocks_cu_ids = $query_vu_blocks_cu->execute();
+        $viewed_user_has_blocked_current_user = !empty($vu_blocks_cu_ids);
 
-    // $variables['#attached']['library'][] = 'core/drupal.ajax';
-    $variables['#attached']['library'][] = 'match_abuse/match-abuse-script';
-    // The theme is expected to provide Bootstrap JS for dropdowns and Bootstrap icons.
+        if ($viewed_user_has_blocked_current_user) {
+          $hide_all_other_content = TRUE;
+          $build['match_abuse_block_alert'] = [
+            '#type' => 'markup',
+            '#markup' => '<div class="alert alert-warning mt-3" role="alert">' . t('%username has blocked you.', ['%username' => $user_being_viewed->getAccountName()]) . '</div>',
+            '#weight' => -100, // Display prominently
+          ];
+          // Dropdown items remain empty as current user can't act.
+        } elseif ($current_user_has_blocked_viewed_user) {
+          $hide_all_other_content = TRUE;
+          $report_button_link = Link::createFromRoute(
+            Markup::create('<i class="bi bi-shield-exclamation"></i> ' . t('Report @username', ['@username' => $user_being_viewed->getAccountName()])),
+            'match_abuse.report_abuse',
+            ['user_to_report' => $viewed_user_id],
+            ['attributes' => ['class' => ['btn', 'btn-danger', 'btn-sm', 'ms-2']]]
+          );
+
+          $build['match_abuse_block_alert'] = [
+            '#type' => 'markup',
+            '#markup' => '<div class="alert alert-warning mt-3" role="alert">' . t('You have blocked %username.', ['%username' => $user_being_viewed->getAccountName()]) . ' ' . $report_button_link->toString() . '</div>',
+            '#weight' => -100, // Display prominently
+          ];
+
+          if ($current_user->hasPermission('block users')) {
+            $dropdown_items['unblock_user'] = [
+              'title' => Markup::create('<i class="bi bi-person-check"></i> ' . t('Unblock @username', ['@username' => $user_being_viewed->getAccountName()])),
+              'url' => Url::fromRoute('match_abuse.ajax_unblock_user', ['user_to_unblock' => $viewed_user_id]),
+              'attributes' => ['class' => ['use-ajax', 'dropdown-item', 'match-abuse-link']],
+            ];
+          }
+        } else {
+          // No blocks: Standard "Block User" action
+          if ($current_user->hasPermission('block users')) {
+            $dropdown_items['block_user'] = [
+              'title' => Markup::create('<i class="bi bi-person-slash"></i> ' . t('Block @username', ['@username' => $user_being_viewed->getAccountName()])),
+              'url' => Url::fromRoute('match_abuse.ajax_block_user', ['user_to_block' => $viewed_user_id]),
+              'attributes' => ['class' => ['use-ajax', 'dropdown-item', 'match-abuse-link']],
+            ];
+          }
+        }
+
+        // Build the actions dropdown menu if there are items.
+        if (!empty($dropdown_items)) {
+          $build['match_abuse_user_actions'] = [
+            '#type' => 'container',
+            '#attributes' => ['class' => ['dropdown', 'user-profile-actions']],
+            '#weight' => 10, // Adjust weight as needed relative to user_picture
+            'button' => [
+              '#type' => 'html_tag',
+              '#tag' => 'button',
+              '#attributes' => [
+                'class' => ['btn', 'btn-link', 'btn-sm', 'text-decoration-none', 'p-1', 'lh-1'],
+                'type' => 'button',
+                'id' => 'userActionsDropdown-' . $viewed_user_id,
+                'data-bs-toggle' => 'dropdown',
+                'aria-expanded' => 'false',
+                'title' => t('Actions'),
+              ],
+              'icon' => ['#markup' => '<i class="bi bi-three-dots-vertical"></i>'],
+            ],
+            'menu' => [
+              '#theme' => 'links',
+              '#links' => $dropdown_items,
+              '#attributes' => [
+                'class' => ['dropdown-menu'],
+                'aria-labelledby' => 'userActionsDropdown-' . $viewed_user_id,
+                'id' => 'userActionsDropdownMenu-' . $viewed_user_id,
+              ],
+            ],
+            '#attached' => [
+              'library' => ['core/drupal.ajax', 'match_abuse/match-abuse-script'],
+            ],
+          ];
+        }
+
+        if ($hide_all_other_content) {
+          // Hide all fields configured in the display except user_picture.
+          // Our alert and actions dropdown are added directly to $build and handled by Twig.
+          $components = $display->getComponents();
+          foreach (array_keys($components) as $field_name) {
+            if ($field_name !== 'user_picture') { // user_picture is handled by Twig
+              if (isset($build[$field_name])) {
+                $build[$field_name]['#access'] = FALSE;
+              }
+            }
+          }
+          // Also hide other top-level elements that are not fields, if necessary,
+          // but be cautious not to hide essential render array properties like #cache.
+          // For now, hiding components should cover most profile fields.
+        }
+
+        // Clean up old elements if they were defined by a previous version of this hook.
+        // These specific keys are from a previous iteration and might not be present.
+        unset($build['match_abuse_block_action']);
+        unset($build['match_abuse_report_action']);
+      }
+    }
   }
 }

@@ -2,18 +2,18 @@
 
 namespace Drupal\match_abuse\Controller;
 
-use Drupal\Core\Controller\ControllerBase;
+use Drupal\Core\Link;
 use Drupal\Core\Url;
 use Drupal\user\UserInterface;
-use Symfony\Component\HttpFoundation\RedirectResponse;
 use Drupal\Core\Ajax\AjaxResponse;
+use Drupal\Core\Ajax\InvokeCommand;
 use Drupal\Core\Ajax\AppendCommand;
 use Drupal\Core\Ajax\ReplaceCommand;
-use Drupal\match_abuse\Ajax\ShowBootstrapToastCommand;
+use Drupal\Core\Session\AccountInterface;
 use Drupal\Core\Render\RendererInterface;
-use Drupal\Core\Render\Markup;
-use Drupal\match_chat\Form\MatchMessageForm; // Added for type hinting and instantiation
-use Symfony\Component\HttpFoundation\Request; // <-- Add this
+use Drupal\Core\Controller\ControllerBase;
+use Drupal\Core\Ajax\MessageCommand;
+use Symfony\Component\HttpFoundation\RedirectResponse;
 use Symfony\Component\DependencyInjection\ContainerInterface;
 
 class MatchAbuseController extends ControllerBase
@@ -48,97 +48,130 @@ class MatchAbuseController extends ControllerBase
   }
 
   /**
-   * Generates the block/unblock link container render array.
+   * Generates the dropdown items for block/unblock and report actions.
    *
    * @param \Drupal\user\UserInterface $user_to_check
-   * The user whose profile is being viewed or interacted with.
-   * @param string|null $chat_thread_id
-   * Optional chat thread ID to include in AJAX URLs.
-   * @param array $custom_options
-   * Optional array to customize classes and markup.
-   * - wrapper_classes: Array of classes for the wrapper container.
-   * - link_classes_base: Array of common classes for the link.
-   * - link_classes_block_state: Array of classes specific to the "block" state.
-   * - link_classes_unblock_state: Array of classes specific to the "unblock" state.
-   * - icon_markup: String HTML for the icon (e.g., Bootstrap icon).
+   * The user whose profile is being viewed.
    *
    * @return array
-   * A render array for the container holding the block/unblock link.
+   * An array of link items suitable for #theme => 'links'.
    */
-  public function getBlockLinkRenderArray(UserInterface $user_to_check, ?string $chat_thread_id = NULL, array $custom_options = []): array
+  private function getDropdownItems(UserInterface $user_to_check): array
   {
     $current_user = $this->currentUser();
+    $dropdown_items = [];
 
-    if ($current_user->id() == $user_to_check->id() || !$current_user->hasPermission('block users')) {
-      return []; // No action possible
+    // Determine if the current user has blocked user_to_check.
+    $is_blocked = FALSE;
+    if ($current_user->id() != $user_to_check->id()) {
+      $storage = $this->entityTypeManager()->getStorage('match_abuse_block');
+      $query = $storage->getQuery()
+        ->condition('blocker_uid', $current_user->id())
+        ->condition('blocked_uid', $user_to_check->id())
+        ->accessCheck(TRUE);
+      $ids = $query->execute();
+      $is_blocked = !empty($ids);
     }
 
-    $storage = $this->entityTypeManager()->getStorage('match_abuse_block');
-    $query = $storage->getQuery()
-      ->condition('blocker_uid', $current_user->id())
-      ->condition('blocked_uid', $user_to_check->id())
-      ->accessCheck(TRUE);
-    $ids = $query->execute();
-
-    $default_options = [
-      'wrapper_classes' => ['js-form-wrapper'],
-      // Add js-match-abuse-confirm-action, remove use-ajax
-      'link_classes_base' => ['js-match-abuse-confirm-action', 'match-abuse-link', 'btn', 'd-block', 'w-100'],
-      'link_classes_block_state' => ['btn-danger'],
-      'link_classes_unblock_state' => ['btn-success'],
-      'icon_markup' => '<i class="bi bi-person-slash" aria-hidden="true"></i> ',
-    ];
-    $options = array_merge($default_options, $custom_options);
-
-    $wrapper_id_attribute = 'match-abuse-block-link-wrapper-' . $user_to_check->id();
-    $url_options = [];
-    if ($chat_thread_id) {
-      $url_options['query'] = ['chat_thread_id' => $chat_thread_id];
+    if ($current_user->id() != $user_to_check->id() && $current_user->hasPermission('block users')) {
+      if ($is_blocked) {
+        $dropdown_items['unblock_user'] = [
+          'title' => $this->t('Unblock User'),
+          'url' => Url::fromRoute('match_abuse.ajax_unblock_user', ['user_to_unblock' => $user_to_check->id()]),
+          'attributes' => ['class' => ['use-ajax', 'dropdown-item', 'match-abuse-link']],
+        ];
+      } else {
+        $dropdown_items['block_user'] = [
+          'title' => $this->t('Block User'),
+          'url' => Url::fromRoute('match_abuse.ajax_block_user', ['user_to_block' => $user_to_check->id()]),
+          'attributes' => ['class' => ['use-ajax', 'dropdown-item', 'match-abuse-link']],
+        ];
+      }
     }
 
-    $action_type = empty($ids) ? 'block' : 'unblock';
-    $link_title_text = '';
-    $url = NULL; // Initialize $url
+    if ($is_blocked && $current_user->hasPermission('report abuse')) {
+      $dropdown_items['report_abuse'] = [
+        'title' => $this->t('Report Abuse'),
+        'url' => Url::fromRoute('match_abuse.report_abuse', ['user_to_report' => $user_to_check->id()]),
+        'attributes' => ['class' => ['dropdown-item', 'match-abuse-link']],
+      ];
+    }
+    return $dropdown_items;
+  }
 
-    if (empty($ids)) {
-      // Link to block
-      $link_title_text = $this->t('Block @username', ['@username' => $user_to_check->getAccountName()]);
-      $url = Url::fromRoute('match_abuse.ajax_block_user', ['user_to_block' => $user_to_check->id()], $url_options);
-      $link_classes = array_merge($options['link_classes_base'], $options['link_classes_block_state']);
+  /**
+   * Generates render arrays for profile alert and main content based on block status.
+   *
+   * @param \Drupal\user\UserInterface $user_being_viewed
+   *   The user whose profile is being viewed.
+   * @param \Drupal\Core\Session\AccountInterface $current_user
+   *   The current logged-in user.
+   *
+   * @return array
+   *   An array containing 'alert_content' and 'main_content' render arrays.
+   */
+  private function getProfileDisplayElements(UserInterface $user_being_viewed, AccountInterface $current_user): array
+  {
+    $viewed_user_id = $user_being_viewed->id();
+    $current_user_id = $current_user->id();
+    $block_storage = $this->entityTypeManager()->getStorage('match_abuse_block');
+
+    $current_user_has_blocked_viewed_user = !empty($block_storage->getQuery()
+      ->condition('blocker_uid', $current_user_id)
+      ->condition('blocked_uid', $viewed_user_id)
+      ->accessCheck(TRUE)
+      ->execute());
+
+    $viewed_user_has_blocked_current_user = !empty($block_storage->getQuery()
+      ->condition('blocker_uid', $viewed_user_id)
+      ->condition('blocked_uid', $current_user_id)
+      ->accessCheck(TRUE)
+      ->execute());
+
+    $alert_render_array = ['#markup' => ''];
+    $main_content_render_array = ['#markup' => '']; // Default to empty if content should be hidden.
+
+    if ($viewed_user_has_blocked_current_user) {
+      $alert_render_array = [
+        '#type' => 'markup',
+        '#markup' => '<div class="alert alert-warning mt-3" role="alert">' . $this->t('%username has blocked you.', ['%username' => $user_being_viewed->getAccountName()]) . '</div>',
+      ];
+    } elseif ($current_user_has_blocked_viewed_user) {
+      $report_button_link = '';
+      if ($current_user->hasPermission('report abuse')) {
+        $report_button_link = Link::createFromRoute(
+          $this->t('Report @username', ['@username' => $user_being_viewed->getAccountName()]),
+          'match_abuse.report_abuse',
+          ['user_to_report' => $viewed_user_id],
+          ['attributes' => ['class' => ['btn', 'btn-danger', 'btn-sm', 'ms-2']]]
+        )->toString();
+      }
+      $alert_render_array = [
+        '#type' => 'markup',
+        '#markup' => '<div class="alert alert-warning mt-3" role="alert">' . $this->t('You have blocked %username.', ['%username' => $user_being_viewed->getAccountName()]) . ' ' . $report_button_link . '</div>',
+      ];
     } else {
-      // Link to unblock
-      $link_title_text = $this->t('Unblock @username', ['@username' => $user_to_check->getAccountName()]);
-      $url = Url::fromRoute('match_abuse.ajax_unblock_user', ['user_to_unblock' => $user_to_check->id()], $url_options);
-      $link_classes = array_merge($options['link_classes_base'], $options['link_classes_unblock_state']);
+      // No block: main content should be the user's profile fields.
+      // Load the 'default' entity view display for users.
+      $display = $this->entityTypeManager()
+        ->getStorage('entity_view_display')
+        ->load('user.user.default');
+
+      if ($display) {
+        $full_content_build = $display->build($user_being_viewed);
+        // These elements are handled by Twig's `without` or other AJAX commands.
+        unset($full_content_build['user_picture']);
+        unset($full_content_build['match_abuse_user_actions']);
+        unset($full_content_build['match_abuse_block_alert']);
+        $main_content_render_array = $full_content_build;
+      } else {
+        $main_content_render_array = ['#markup' => $this->t('Error: Could not load user display configuration.')];
+      }
     }
 
-    // Ensure the link has a unique ID for Drupal.Ajax
-    $link_id = 'match-abuse-action-link-' . $user_to_check->id() . '-' . $action_type . '-' . uniqid();
-
-
-    // This render array must match the structure defined in ChatSettingsPopoverForm
-    // for the 'block_user_action_wrapper' so ReplaceCommand works as expected.
     return [
-      '#type' => 'container',
-      '#attributes' => ['id' => $wrapper_id_attribute, 'class' => $options['wrapper_classes']],
-      'block_button_link' => [ // Key must match the one in ChatSettingsPopoverForm
-        '#type' => 'link',
-        '#title' => Markup::create($options['icon_markup'] . htmlspecialchars($link_title_text)),
-        '#url' => Url::fromRoute('<nolink>'), // Prevent default navigation
-        '#attributes' => [
-          'id' => $link_id, // Add unique ID to the link
-          'class' => $link_classes,
-          'role' => 'button',
-          'aria-label' => $link_title_text,
-          // Data attributes for JS confirmation modal
-          'data-ajax-url' => $url->toString(),
-          'data-username' => $user_to_check->getAccountName(),
-          'data-action-type' => $action_type,
-          // These are not strictly needed if JS triggers modal manually, but can be kept for reference
-          // 'data-bs-toggle' => 'modal',
-          // 'data-bs-target' => '#matchAbuseConfirmModal',
-        ],
-      ],
+      'alert_content' => $alert_render_array,
+      'main_content' => $main_content_render_array,
     ];
   }
 
@@ -147,13 +180,11 @@ class MatchAbuseController extends ControllerBase
    *
    * @param \Drupal\user\UserInterface $user_to_block
    * The user to block.
-   * @param \Symfony\Component\HttpFoundation\Request $request
-   * The current request.
    *
    * @return \Drupal\Core\Ajax\AjaxResponse
    * The AJAX response.
    */
-  public function ajaxBlockUser(UserInterface $user_to_block, Request $request): AjaxResponse
+  public function ajaxBlockUser(UserInterface $user_to_block): AjaxResponse
   {
     $current_user = $this->currentUser();
     $response = new AjaxResponse();
@@ -173,54 +204,35 @@ class MatchAbuseController extends ControllerBase
       ]);
       $block->save();
       $message = $this->t('You have blocked %username!', ['%username' => $user_to_block->getAccountName()]);
-      // --- USE NEW COMMAND ---
-      $response->addCommand(new ShowBootstrapToastCommand($message, $this->t('User Blocked'), 'warning'));
+      $response->addCommand(new MessageCommand($message, NULL, ['type' => 'status']));
     } else {
       $message = $this->t('%username is already blocked!', ['%username' => $user_to_block->getAccountName()]);
-      // --- USE NEW COMMAND ---
-      $response->addCommand(new ShowBootstrapToastCommand($message, $this->t('Already Blocked'), 'error'));
+      $response->addCommand(new MessageCommand($message, NULL, ['type' => 'error']));
     }
 
-    // Replace the link
-    $chat_thread_id = $request->query->get('chat_thread_id');
-    $options_for_link_render = [];
+    // Replace the dropdown menu content.
+    $dropdown_items = $this->getDropdownItems($user_to_block);
+    $dropdown_menu_id_selector = '#userActionsDropdownMenu-' . $user_to_block->id();
+    $new_menu_render_array = [
+      '#theme' => 'links',
+      '#links' => $dropdown_items,
+      '#attributes' => [
+        'class' => ['dropdown-menu'],
+        'aria-labelledby' => 'userActionsDropdown-' . $user_to_block->id(),
+      ],
+    ];
+    $response->addCommand(new ReplaceCommand($dropdown_menu_id_selector, $new_menu_render_array));
 
-    if ($chat_thread_id) {
-      // Options for chat popover, as per your request
-      $options_for_link_render = [
-        'wrapper_classes' => ['mt-3', 'mb-n4', 'mx-n4', 'js-form-wrapper', 'form-wrapper', 'mb-3'],
-        'link_classes_base' => ['js-match-abuse-confirm-action', 'match-abuse-link', 'btn', 'd-block', 'w-100', 'rounded-top-0'],
-        'link_classes_block_state' => ['btn-danger', 'text-muted'],
-        'link_classes_unblock_state' => ['btn-success', 'text-muted'],
-        // Default icon will be used unless overridden here
-      ];
-    } else {
-      // Options for profile page dropdown (or other non-chat contexts)
-      $options_for_link_render = [
-        'wrapper_classes' => [], // No extra margin for dropdown item wrapper.
-        'link_classes_base' => ['js-match-abuse-confirm-action', 'match-abuse-link', 'dropdown-item'],
-        'link_classes_block_state' => ['bg-danger', 'mb-n2', 'text-muted', 'rounded-bottom-2'], // Keep text-only danger for dropdown
-        'link_classes_unblock_state' => ['bg-success', 'mb-n2', 'text-muted', 'rounded-bottom-2'], // Keep text-only success for dropdown
-      ];
-    }
-    // Ensure to pass through $custom_options if they were originally provided and relevant
-    // For now, we directly use the determined $options_for_link_render
-    $link_container_render_array = $this->getBlockLinkRenderArray($user_to_block, $chat_thread_id, $options_for_link_render);
-    $wrapper_selector = '#match-abuse-block-link-wrapper-' . $user_to_block->id();
-    $response->addCommand(new ReplaceCommand($wrapper_selector, $link_container_render_array));
+    // After replacing content, tell Bootstrap to show the dropdown again.
+    $response->addCommand(new InvokeCommand('#userActionsDropdown-' . $user_to_block->id(), 'dropdown', ['show']));
 
-    // If a chat_thread_id is provided in the request, rebuild and replace the message form.
-    if ($chat_thread_id) {
-      $thread_storage = $this->entityTypeManager()->getStorage('match_thread');
-      /** @var \Drupal\match_chat\Entity\MatchThreadInterface|null $thread_entity */
-      $thread_entity = $thread_storage->load($chat_thread_id);
-      if ($thread_entity) {
-        // MatchMessageForm::class will resolve to the correct form class.
-        $message_form_render_array = $this->formBuilder()->getForm(MatchMessageForm::class, $thread_entity);
-        $message_form_wrapper_id = '#match-message-form-wrapper-' . $thread_entity->id();
-        $response->addCommand(new ReplaceCommand($message_form_wrapper_id, $message_form_render_array));
-      }
-    }
+    // Update profile alert and main content area.
+    $profile_elements = $this->getProfileDisplayElements($user_to_block, $current_user);
+    $alert_wrapper_selector = '#profile-alert-area-' . $user_to_block->id();
+    $response->addCommand(new ReplaceCommand($alert_wrapper_selector, $profile_elements['alert_content']));
+
+    $main_content_wrapper_selector = '#profile-main-content-area-' . $user_to_block->id();
+    $response->addCommand(new ReplaceCommand($main_content_wrapper_selector, $profile_elements['main_content']));
 
     return $response;
   }
@@ -230,13 +242,11 @@ class MatchAbuseController extends ControllerBase
    *
    * @param \Drupal\user\UserInterface $user_to_unblock
    * The user to unblock.
-   * @param \Symfony\Component\HttpFoundation\Request $request
-   * The current request.
    *
    * @return \Drupal\Core\Ajax\AjaxResponse
    * The AJAX response.
    */
-  public function ajaxUnblockUser(UserInterface $user_to_unblock, Request $request): AjaxResponse
+  public function ajaxUnblockUser(UserInterface $user_to_unblock): AjaxResponse
   {
     $current_user = $this->currentUser();
     $response = new AjaxResponse();
@@ -252,52 +262,35 @@ class MatchAbuseController extends ControllerBase
       $entities = $storage->loadMultiple($ids);
       $storage->delete($entities);
       $message = $this->t('You have unblocked %username!', ['%username' => $user_to_unblock->getAccountName()]);
-      // --- USE NEW COMMAND ---
-      $response->addCommand(new ShowBootstrapToastCommand($message, $this->t('User unblocked')));
+      $response->addCommand(new MessageCommand($message, NULL, ['type' => 'status']));
     } else {
       $message = $this->t('%username was not blocked!', ['%username' => $user_to_unblock->getAccountName()]);
-      // --- USE NEW COMMAND ---
-      $response->addCommand(new ShowBootstrapToastCommand($message, $this->t('Not blocked'), 'error'));
+      $response->addCommand(new MessageCommand($message, NULL, ['type' => 'error']));
     }
 
-    // Replace the link
-    $chat_thread_id = $request->query->get('chat_thread_id');
-    $options_for_link_render = [];
+    // Replace the dropdown menu content.
+    $dropdown_items = $this->getDropdownItems($user_to_unblock);
+    $dropdown_menu_id_selector = '#userActionsDropdownMenu-' . $user_to_unblock->id();
+    $new_menu_render_array = [
+      '#theme' => 'links',
+      '#links' => $dropdown_items,
+      '#attributes' => [
+        'class' => ['dropdown-menu'],
+        'aria-labelledby' => 'userActionsDropdown-' . $user_to_unblock->id(),
+      ],
+    ];
+    $response->addCommand(new ReplaceCommand($dropdown_menu_id_selector, $new_menu_render_array));
 
-    if ($chat_thread_id) {
-      // Options for chat popover, as per your request
-      $options_for_link_render = [
-        'wrapper_classes' => ['mt-3', 'mb-n4', 'mx-n4', 'js-form-wrapper', 'form-wrapper', 'mb-3'],
-        'link_classes_base' => ['js-match-abuse-confirm-action', 'match-abuse-link', 'btn', 'd-block', 'w-100', 'rounded-top-0'],
-        'link_classes_block_state' => ['btn-danger', 'text-muted'],
-        'link_classes_unblock_state' => ['btn-success', 'text-muted'],
-        // Default icon will be used unless overridden here
-      ];
-    } else {
-      // Options for profile page dropdown (or other non-chat contexts)
-      $options_for_link_render = [
-        'wrapper_classes' => ['js-form-wrapper'], // No extra margin for dropdown item wrapper.
-        'link_classes_base' => ['js-match-abuse-confirm-action', 'match-abuse-link', 'dropdown-item'],
-        'link_classes_block_state' => ['bg-danger', 'mb-n2', 'text-muted', 'rounded-bottom-2'], // Keep text-only danger for dropdown
-        'link_classes_unblock_state' => ['bg-success', 'mb-n2', 'text-muted', 'rounded-bottom-2'], // Keep text-only success for dropdown
-      ];
-    }
-    $link_container_render_array = $this->getBlockLinkRenderArray($user_to_unblock, $chat_thread_id, $options_for_link_render);
-    $wrapper_selector = '#match-abuse-block-link-wrapper-' . $user_to_unblock->id();
-    $response->addCommand(new ReplaceCommand($wrapper_selector, $link_container_render_array));
+    // After replacing content, tell Bootstrap to show the dropdown again.
+    $response->addCommand(new InvokeCommand('#userActionsDropdown-' . $user_to_unblock->id(), 'dropdown', ['show']));
 
-    // If a chat_thread_id is provided in the request, rebuild and replace the message form.
-    if ($chat_thread_id) {
-      $thread_storage = $this->entityTypeManager()->getStorage('match_thread');
-      /** @var \Drupal\match_chat\Entity\MatchThreadInterface|null $thread_entity */
-      $thread_entity = $thread_storage->load($chat_thread_id);
-      if ($thread_entity) {
-        // MatchMessageForm::class will resolve to the correct form class.
-        $message_form_render_array = $this->formBuilder()->getForm(MatchMessageForm::class, $thread_entity);
-        $message_form_wrapper_id = '#match-message-form-wrapper-' . $thread_entity->id();
-        $response->addCommand(new ReplaceCommand($message_form_wrapper_id, $message_form_render_array));
-      }
-    }
+    // Update profile alert and main content area.
+    $profile_elements = $this->getProfileDisplayElements($user_to_unblock, $current_user);
+    $alert_wrapper_selector = '#profile-alert-area-' . $user_to_unblock->id();
+    $response->addCommand(new ReplaceCommand($alert_wrapper_selector, $profile_elements['alert_content']));
+
+    $main_content_wrapper_selector = '#profile-main-content-area-' . $user_to_unblock->id();
+    $response->addCommand(new ReplaceCommand($main_content_wrapper_selector, $profile_elements['main_content']));
 
     return $response;
   }
